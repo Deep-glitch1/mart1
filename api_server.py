@@ -156,7 +156,7 @@ async def get_products():
             result = conn.execute(text("""
                 SELECT p.product_id, p.name, p.barcode, p.price, p.stock_quantity, 
                        p.low_stock_threshold, p.category_id, c.name as category, 
-                       p.supplier_id, s.name as supplier
+                       p.supplier_id, s.name as supplier, p.cost_price
                 FROM products p
                 LEFT JOIN categories c ON p.category_id = c.category_id
                 LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
@@ -175,11 +175,49 @@ async def get_products():
                 "category_id": r[6],
                 "category": r[7],
                 "supplier_id": r[8],
-                "supplier": r[9]
+                "supplier": r[9],
+                "cost_price": float(r[10]) if r[10] else 0
             }
             for r in rows
         ]
         return {"products": products}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/products/{product_id}")
+async def get_product(product_id: int):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT p.product_id, p.name, p.barcode, p.price, p.stock_quantity, 
+                       p.low_stock_threshold, p.category_id, c.name as category, 
+                       p.supplier_id, s.name as supplier, p.cost_price
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.category_id
+                LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
+                WHERE p.product_id = :pid
+            """), {"pid": product_id})
+            row = result.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Product not found")
+        
+        product = {
+            "product_id": row[0],
+            "name": row[1],
+            "barcode": row[2],
+            "price": float(row[3]) if row[3] else 0,
+            "stock_quantity": row[4],
+            "low_stock_threshold": row[5],
+            "category_id": row[6],
+            "category": row[7],
+            "supplier_id": row[8],
+            "supplier": row[9],
+            "cost_price": float(row[10]) if row[10] else 0
+        }
+        return product
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -188,8 +226,8 @@ async def add_product(product: Product):
     try:
         with engine.begin() as conn:
             result = conn.execute(text("""
-                INSERT INTO products (name, barcode, price, stock_quantity, category_id, supplier_id, low_stock_threshold)
-                VALUES (:name, :barcode, :price, :stock, :category_id, :supplier_id, :threshold)
+                INSERT INTO products (name, barcode, price, stock_quantity, category_id, supplier_id, low_stock_threshold, cost_price)
+                VALUES (:name, :barcode, :price, :stock, :category_id, :supplier_id, :threshold, :cost_price)
                 RETURNING product_id
             """), {
                 "name": product.name,
@@ -198,7 +236,8 @@ async def add_product(product: Product):
                 "stock": product.stock_quantity,
                 "category_id": product.category_id,
                 "supplier_id": product.supplier_id,
-                "threshold": product.low_stock_threshold
+                "threshold": product.low_stock_threshold,
+                "cost_price": product.price * 0.6 if not hasattr(product, 'cost_price') else product.cost_price
             })
             product_id = result.fetchone()[0]
         return {"message": "Product added successfully", "product_id": product_id}
@@ -399,8 +438,8 @@ async def create_sale(sale: Sale):
             
             result = conn.execute(text("""
                 INSERT INTO sales (total_amount, payment_method, customer_id, employee_id, 
-                                   discount_percentage, customer_rating, feedback)
-                VALUES (:total, :pm, :cid, :eid, :discount, :rating, :feedback)
+                                   discount_percentage, customer_rating, feedback, sale_time)
+                VALUES (:total, :pm, :cid, :eid, :discount, :rating, :feedback, CURRENT_TIMESTAMP)
                 RETURNING sale_id
             """), {
                 "total": round(total, 2),
@@ -415,13 +454,14 @@ async def create_sale(sale: Sale):
             
             for item in cart:
                 conn.execute(text("""
-                    INSERT INTO sale_items (sale_id, product_id, quantity, unit_price)
-                    VALUES (:sale_id, :pid, :qty, :price)
+                    INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal)
+                    VALUES (:sale_id, :pid, :qty, :price, :subtotal)
                 """), {
                     "sale_id": sale_id,
                     "pid": item['product_id'],
                     "qty": item['quantity'],
-                    "price": item['price']
+                    "price": item['price'],
+                    "subtotal": item['subtotal']
                 })
                 
                 conn.execute(text("""
@@ -749,8 +789,8 @@ async def create_purchase_order(order: PurchaseOrder):
             
             # Create purchase order
             result = conn.execute(text("""
-                INSERT INTO purchase_orders (supplier_id, status)
-                VALUES (:supplier_id, :status)
+                INSERT INTO purchase_orders (supplier_id, order_date, status)
+                VALUES (:supplier_id, CURRENT_TIMESTAMP, :status)
                 RETURNING order_id
             """), {
                 "supplier_id": order.supplier_id,
